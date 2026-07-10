@@ -11,7 +11,6 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Minimalne modele bazy danych potrzebne Workerowi
 class JobStatus(enum.Enum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
@@ -31,21 +30,28 @@ class Issue(Base):
     file_path = Column(String(500))
 
 def process_pdf(job, issue):
-    print(f"Rozpoczynam przetwarzanie pliku: {issue.file_path}", flush=True)
+    print(f"\nRozpoczynam analizę pliku: {issue.file_path}", flush=True)
     try:
-        # Otwieramy plik PDF za pomocą PyMuPDF
         doc = fitz.open(issue.file_path)
-        print(f"Dokument otwarty pomyślnie. Liczba stron: {doc.page_count}", flush=True)
         
-        # Próbujemy wyciągnąć spis treści (tzw. outlines/bookmarks)
-        toc = doc.get_toc()
-        if toc:
-            print("SUKCES: Znaleziono natywny spis treści! Oto on:", flush=True)
-            for item in toc:
-                # Format: [poziom_zagnieżdżenia, tytuł, numer_strony]
-                print(f" - Poziom {item[0]}: {item[1]} (Strona {item[2]})", flush=True)
-        else:
-            print("INFORMACJA: Brak natywnego spisu treści. Będziemy musieli analizować tekst lub wyrażenia regularne.", flush=True)
+        print("Skanowanie pierwszych 10 stron w poszukiwaniu potencjalnych tytułów...", flush=True)
+        pages_to_scan = min(10, doc.page_count)
+        
+        for page_num in range(pages_to_scan):
+            page = doc.load_page(page_num)
+            # Pobieramy strukturę tekstu w formie słownika (dict)
+            blocks = page.get_text("dict")["blocks"]
+            
+            for b in blocks:
+                if "lines" in b:
+                    for l in b["lines"]:
+                        for s in l["spans"]:
+                            font_size = s["size"]
+                            text = s["text"].strip()
+                            
+                            # Filtrujemy pusty tekst i szukamy czcionek większych niż standardowy tekst (zakładamy > 12)
+                            if font_size > 12 and len(text) > 4:
+                                print(f"Strona {page_num + 1} | Rozmiar: {font_size:.1f} | Tekst: {text}", flush=True)
         
         doc.close()
         return True
@@ -54,35 +60,27 @@ def process_pdf(job, issue):
         return False
 
 def main():
-    print("Worker Szczytnik uruchomiony. Czekam na zadania...", flush=True)
+    print("Worker Szczytnik (Wersja Heurystyczna) uruchomiony...", flush=True)
     while True:
         db = SessionLocal()
         try:
-            # Szukamy pierwszego zadania ze statusem PENDING
             job = db.query(Job).filter(Job.status == JobStatus.PENDING).first()
             if job:
                 print(f"\n--- Znaleziono nowe zadanie ID: {job.id} ---", flush=True)
-                
-                # Oznaczamy jako przetwarzane
                 job.status = JobStatus.PROCESSING
                 db.commit()
                 
-                # Pobieramy dane o czasopiśmie
                 issue = db.query(Issue).filter(Issue.id == job.issue_id).first()
-                
-                # Przetwarzamy plik
                 success = process_pdf(job, issue)
                 
-                # Aktualizujemy status na końcowy
                 job.status = JobStatus.COMPLETED if success else JobStatus.FAILED
                 db.commit()
-                print(f"Zadanie ID: {job.id} zakończone statusem: {job.status.value}", flush=True)
+                print(f"Zadanie ID: {job.id} zakończone.", flush=True)
         except Exception as e:
             print(f"Błąd zapytania do bazy danych: {e}", flush=True)
         finally:
             db.close()
         
-        # Czekamy 10 sekund przed kolejnym sprawdzeniem bazy
         time.sleep(10)
 
 if __name__ == "__main__":
