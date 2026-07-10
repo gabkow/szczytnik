@@ -1,2 +1,3 @@
 pymysql==1.1.0
-# PyMuPDF i google-generativeai dodamy w kolejnej fazie
+sqlalchemy==2.0.28
+pymupdf==1.23.26
