@@ -41,7 +41,8 @@ services:
       - DATABASE_URL=mysql+pymysql://szczytnik_user:user_secure_password@db/szczytnik_db
       - GEMINI_API_KEY=twoj_klucz_api_tutaj
     volumes:
-      - ./shared_data:/app/shared_data
+      - ./shared_data:/app/shared_data:Z
+      - ./worker:/app:Z
     depends_on:
       - db
     networks:
