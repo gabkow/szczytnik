@@ -56,7 +56,7 @@ def analyze_and_slice(issue_id, file_path, db):
                 if "lines" in b:
                     for l in b["lines"]:
                         for s in l["spans"]:
-                            if s["size"] >= 22.0:
+                            if s["size"] >= 20.0:
                                 text = s["text"].strip()
                                 if len(text) > 3:
                                     page_titles.append(text)
