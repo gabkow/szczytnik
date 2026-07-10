@@ -54,12 +54,14 @@ class Article(Base):
 # --- SILNIK AI ---
 def extract_metadata_with_ai(text: str):
     try:
-        # Konfigurujemy model, wymuszając zwrot w formacie JSON
-        model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
+        # Usuwamy stąd generation_config, zostaje samo czyste wywołanie modelu
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
-        Przeanalizuj poniższy tekst artykułu z czasopisma i zwróć metadane w formacie JSON.
-        Wymagana struktura JSON:
+        Przeanalizuj poniższy tekst artykułu z czasopisma i zwróć metadane OBLIGATORYJNIE w formacie JSON.
+        Twoja odpowiedź musi zawierać WYŁĄCZNIE czysty kod JSON, bez żadnych dodatkowych wstępów, komentarzy czy znaczników markdown (nie używaj ```json ... ```).
+        
+        Wymagana struktura obiektu JSON:
         {{
             "author": "Imię i nazwisko autora. Jeśli nie występuje w tekście, wpisz 'Nieznany'",
             "abstract": "Krótkie streszczenie artykułu, maksymalnie 10 zdań.",
@@ -70,15 +72,26 @@ def extract_metadata_with_ai(text: str):
         {text}
         """
         response = model.generate_content(prompt)
-        result = json.loads(response.text)
         
-        # Konwertujemy listę słów kluczowych na pojedynczy string (np. "historia, wrocław, architektura")
+        # Oczyszczamy odpowiedź na wypadek, gdyby model mimo wszystko dodał bloki kodu markdown
+        response_text = response.text.strip()
+        if response_text.startswith("```"):
+            # Jeśli model dodał ```json ... ```, wycinamy to
+            lines = response_text.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].startswith("```"):
+                lines = lines[:-1]
+            response_text = "\n".join(lines).strip()
+
+        result = json.loads(response_text)
+        
         if isinstance(result.get("keywords"), list):
             result["keywords"] = ", ".join(result["keywords"])
             
         return result
     except Exception as e:
-        print(f"Błąd komunikacji z AI: {e}", flush=True)
+        print(f"Błąd komunikacji z AI lub parsowania JSON: {e}", flush=True)
         return {"author": "Nieznany", "abstract": "Błąd wygenerowania streszczenia.", "keywords": ""}
 
 # --- GŁÓWNY ALGORYTM ---
