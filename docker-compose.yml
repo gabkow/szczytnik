@@ -39,7 +39,7 @@ services:
     restart: always
     environment:
       - DATABASE_URL=mysql+pymysql://szczytnik_user:user_secure_password@db/szczytnik_db
-      - GEMINI_API_KEY=twoj_klucz_api_tutaj
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ./shared_data:/app/shared_data:Z
       - ./worker:/app:Z
