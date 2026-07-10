@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # Baza danych MariaDB
+  db:
+    image: mariadb:10.11
+    container_name: szczytnik_db
+    restart: always
+    environment:
+      MARIADB_ROOT_PASSWORD: root_secure_password
+      MARIADB_DATABASE: szczytnik_db
+      MARIADB_USER: szczytnik_user
+      MARIADB_PASSWORD: user_secure_password
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - szczytnik_network
+
+  # Core Backend (FastAPI)
+  backend:
+    build: ./backend
+    container_name: szczytnik_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=mysql+pymysql://szczytnik_user:user_secure_password@db/szczytnik_db
+    volumes:
+      - ./shared_data:/app/shared_data
+    depends_on:
+      - db
+    networks:
+      - szczytnik_network
+
+  # Worker (Przetwarzanie PDF i AI)
+  worker:
+    build: ./worker
+    container_name: szczytnik_worker
+    restart: always
+    environment:
+      - DATABASE_URL=mysql+pymysql://szczytnik_user:user_secure_password@db/szczytnik_db
+      - GEMINI_API_KEY=twoj_klucz_api_tutaj
+    volumes:
+      - ./shared_data:/app/shared_data
+    depends_on:
+      - db
+    networks:
+      - szczytnik_network
+
+  # Frontend (PHP na Apache)
+  frontend:
+    build: ./frontend
+    container_name: szczytnik_frontend
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./shared_data:/var/www/html/shared_data
+    networks:
+      - szczytnik_network
+
+volumes:
+  db_data:
+
+networks:
+  szczytnik_network:
+    driver: bridge
