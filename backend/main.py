@@ -3,6 +3,16 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import models
 from database import engine, SessionLocal
+from fastapi.middleware.cors import CORSMiddleware
+
+# Dodanie middleware do obsługi CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Dla celów testowych - w produkcji należy określić konkretne źródła
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Automatyczne tworzenie tabel przy starcie (jeśli jeszcze nie istnieją)
 models.Base.metadata.create_all(bind=engine)
