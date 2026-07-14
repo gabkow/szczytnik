@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, APIRouter, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import models
@@ -71,3 +71,37 @@ def create_issue(issue_data: IssueCreate, db: Session = Depends(get_db)):
             "status": new_job.status.value
         }
     }
+
+# Edpoint debug do wyświetlania zawartości bazy
+@app.get("/api/debug/database-view")
+def get_database_debug_view(db: Session = Depends(get_db)):
+    try:
+        # 1. Pobieramy wszystkie numery czasopism (issues)
+        issues = db.query(Issue).all()
+        result = []
+        
+        for issue in issues:
+            # 2. Dla każdego numeru pobieramy pierwsze 3 artykuły posortowane wg strony startowej
+            articles = (
+                db.query(Article)
+                .filter(Article.issue_id == issue.id)
+                .order_by(Article.start_page.asc())
+                .limit(3)
+                .all()
+            )
+            
+            for art in articles:
+                result.append({
+                    "issue_title": issue.title,
+                    "issue_number": issue.issue_number,
+                    "article_title": art.title,
+                    "author": art.author,
+                    "start_page": art.start_page,
+                    "keywords": art.keywords,
+                    "abstract": art.abstract
+                })
+                
+        return result
+    except Exception as e:
+        return {"error": f"Błąd pobierania danych: {str(e)}"}
+    
