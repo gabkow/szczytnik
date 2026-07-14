@@ -11,8 +11,13 @@ from sqlalchemy import create_engine, Column, Integer, String, Enum, Text, Forei
 from sqlalchemy.orm import declarative_base, sessionmaker
 import enum
 
-# --- KONFIGURACJA ---
+# --- SEKCJA KONFIGURACYJNA (IDEALNA DO TESTÓW) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://szczytnik_user:user_secure_password@db/szczytnik_db")
+GEMINI_MODEL = "gemini-3.1-flash-lite"   # Szybszy i tańszy model Lite
+SLEEP_INTERVAL = 7                       # Odstęp między zapytaniami w sekundach (bezpieczny dla 15 RPM)
+MAX_ARTICLES_TO_PROCESS = 3              # 0 = procesuj wszystkie, >0 = limit do celów testowych
+
+# --- INICJALIZACJA POŁĄCZEŃ ---
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -71,9 +76,8 @@ def extract_metadata_with_ai(text: str, max_retries=2):
     
     for attempt in range(max_retries + 1):
         try:
-            # Przekazujemy klasę Pydantic bezpośrednio do response_schema!
             response = client.models.generate_content(
-                model='gemini-3.5-flash',
+                model=GEMINI_MODEL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -81,7 +85,6 @@ def extract_metadata_with_ai(text: str, max_retries=2):
                 )
             )
             
-            # W nowym SDK response.parsed zwraca gotowy obiekt klasy ArticleMetadata
             result = response.parsed
             
             if result:
@@ -92,7 +95,6 @@ def extract_metadata_with_ai(text: str, max_retries=2):
                     "keywords": keywords_str
                 }
             else:
-                # Awaryjne parsowanie tekstu w razie braku response.parsed
                 raw_json = json.loads(response.text)
                 if isinstance(raw_json.get("keywords"), list):
                     raw_json["keywords"] = ", ".join(raw_json["keywords"])
@@ -100,7 +102,7 @@ def extract_metadata_with_ai(text: str, max_retries=2):
             
         except APIError as e:
             if e.code == 429 and attempt < max_retries:
-                print(f"    [Ostrzeżenie AI] Przekroczono limit zapytań/tokenów (429). Odczekuję 35 sekund (Próba {attempt+1}/{max_retries})...", flush=True)
+                print(f"    [Ostrzeżenie AI] Przekroczono limit (429). Odczekuję 35 sekund (Próba {attempt+1}/{max_retries})...", flush=True)
                 time.sleep(35)
             else:
                 print(f"Błąd API Google po {attempt} próbach: {e}", flush=True)
@@ -121,6 +123,7 @@ def analyze_and_slice(issue_id, file_path, db):
         doc = fitz.open(file_path)
         detected_articles = []
         
+        # Wykrywanie tytułów (próg wielkości czcionki >= 20)
         for page_num in range(doc.page_count):
             page = doc.load_page(page_num)
             blocks = page.get_text("dict")["blocks"]
@@ -144,11 +147,18 @@ def analyze_and_slice(issue_id, file_path, db):
             print("Nie wykryto artykułów przy użyciu obecnej heurystyki.", flush=True)
             return False
 
+        # Ustalanie stron końcowych
         for i in range(len(detected_articles)):
             if i < len(detected_articles) - 1:
                 detected_articles[i]["end_page"] = detected_articles[i+1]["start_page"] - 1
             else:
                 detected_articles[i]["end_page"] = doc.page_count
+        
+        # --- BLOKADA TESTOWA ---
+        total_detected = len(detected_articles)
+        if MAX_ARTICLES_TO_PROCESS > 0:
+            print(f"    [TEST MODE] Wykryto {total_detected} artykułów, ale ograniczono proces do pierwszych {MAX_ARTICLES_TO_PROCESS}.", flush=True)
+            detected_articles = detected_articles[:MAX_ARTICLES_TO_PROCESS]
         
         print(f"\nRozpoczynam cięcie i analizę AI dla {len(detected_articles)} artykułów...", flush=True)
         
@@ -159,7 +169,7 @@ def analyze_and_slice(issue_id, file_path, db):
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, output_filename)
             
-            # Wycinanie fizycznych stron
+            # Wycinanie fizycznych stron i pobieranie tekstu
             art_doc = fitz.open()
             extracted_text = ""
             for p in range(art["start_page"] - 1, art["end_page"]):
@@ -171,6 +181,7 @@ def analyze_and_slice(issue_id, file_path, db):
             
             print(f" -> [{index+1}/{len(detected_articles)}] Pocięto: {art['title']}. Zapytanie do Gemini API...", flush=True)
             
+            # Zapytanie do Gemini
             ai_data = extract_metadata_with_ai(extracted_text)
             
             print(f"    [AI] Autor: {ai_data.get('author')}", flush=True)
@@ -191,8 +202,8 @@ def analyze_and_slice(issue_id, file_path, db):
             
             # --- BEZPIECZNIK CZASOWY ---
             if index < len(detected_articles) - 1:
-                print("    [Rate Limit] Czekam 20 sekund przed kolejnym zapytaniem...", flush=True)
-                time.sleep(20)
+                print(f"    [Rate Limit] Czekam {SLEEP_INTERVAL} sekund przed kolejnym zapytaniem...", flush=True)
+                time.sleep(SLEEP_INTERVAL)
             
         doc.close()
         return True
@@ -202,7 +213,7 @@ def analyze_and_slice(issue_id, file_path, db):
         return False
 
 def main():
-    print("Worker Szczytnik (Silnik tnący + AI Gemini 3.5 Flash + Pydantic Schema + Auto-Retry + 20s Sleep) uruchomiony...", flush=True)
+    print(f"Worker Szczytnik (Silnik tnący + AI {GEMINI_MODEL} + Pydantic Schema) uruchomiony...", flush=True)
     while True:
         db = SessionLocal()
         try:
