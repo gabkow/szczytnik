@@ -4,6 +4,7 @@ import fitz  # PyMuPDF
 import json
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from sqlalchemy import create_engine, Column, Integer, String, Enum, Text, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker
 import enum
@@ -51,40 +52,50 @@ class Article(Base):
     end_page = Column(Integer)
     file_path = Column(String(500))
 
-# --- SILNIK AI ---
-def extract_metadata_with_ai(text: str):
-    try:
-        prompt = f"""
-        Przeanalizuj poniższy tekst artykułu z czasopisma i zwróć metadane w formacie JSON.
-        Wymagana struktura JSON:
-        {{
-            "author": "Imię i nazwisko autora. Jeśli nie występuje w tekście, wpisz 'Nieznany'",
-            "abstract": "Krótkie streszczenie artykułu, maksymalnie 10 zdań.",
-            "keywords": ["słowo1", "słowo2", "słowo3"] (maksymalnie 6 słów kluczowych)
-        }}
-        
-        Tekst do analizy:
-        {text}
-        """
-        
-        # Używamy najnowszego modelu dostępnego dla nowych kluczy API
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',  # <--- ZMIANA NA NAJNOWSZĄ GENERACJĘ
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
+# --- SILNIK AI (Z MECHANIZMEM PONOWNYCH PRÓB) ---
+def extract_metadata_with_ai(text: str, max_retries=2):
+    prompt = f"""
+    Przeanalizuj poniższy tekst artykułu z czasopisma i zwróć metadane w formacie JSON.
+    Wymagana struktura JSON:
+    {{
+        "author": "Imię i nazwisko autora. Jeśli nie występuje w tekście, wpisz 'Nieznany'",
+        "abstract": "Krótkie streszczenie artykułu, maksymalnie 10 zdań.",
+        "keywords": ["słowo1", "słowo2", "słowo3"] (maksymalnie 6 słów kluczowych)
+    }}
+    
+    Tekst do analizy:
+    {text}
+    """
+    
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                )
             )
-        )
-        
-        result = json.loads(response.text)
-        
-        if isinstance(result.get("keywords"), list):
-            result["keywords"] = ", ".join(result["keywords"])
             
-        return result
-    except Exception as e:
-        print(f"Błąd komunikacji z AI: {e}", flush=True)
-        return {"author": "Nieznany", "abstract": "Błąd wygenerowania streszczenia.", "keywords": ""}
+            result = json.loads(response.text)
+            
+            if isinstance(result.get("keywords"), list):
+                result["keywords"] = ", ".join(result["keywords"])
+                
+            return result
+            
+        except APIError as e:
+            if e.code == 429 and attempt < max_retries:
+                print(f"    [Ostrzeżenie AI] Przekroczono chwilowy limit zapytań/tokenów (429). Odczekuję 35 sekund (Próba {attempt+1}/{max_retries})...", flush=True)
+                time.sleep(35)
+            else:
+                print(f"Błąd API Google po {attempt} próbach: {e}", flush=True)
+                break
+        except Exception as e:
+            print(f"Nieoczekiwany błąd komunikacji z AI: {e}", flush=True)
+            break
+            
+    return {"author": "Nieznany", "abstract": "Błąd wygenerowania streszczenia po kilku próbach.", "keywords": ""}
 
 # --- GŁÓWNY ALGORYTM ---
 def analyze_and_slice(issue_id, file_path, db):
@@ -142,7 +153,6 @@ def analyze_and_slice(issue_id, file_path, db):
             
             print(f" -> [{index+1}/{len(detected_articles)}] Pocięto: {art['title']}. Zapytanie do Gemini API...", flush=True)
             
-            # Wysłanie tekstu do AI
             ai_data = extract_metadata_with_ai(extracted_text)
             
             print(f"    [AI] Autor: {ai_data.get('author')}", flush=True)
@@ -159,13 +169,12 @@ def analyze_and_slice(issue_id, file_path, db):
                 file_path=output_path
             )
             db.add(new_article)
-            db.commit() # Zapisujemy artykuł od razu, by nie czekać na całą serię!
+            db.commit() 
             
-            # --- BEZPIECZNIK CZASOWY (RATE LIMITING) ---
-            # Jeśli to nie jest ostatni artykuł na liście, czekamy 13 sekund w obronie przed limitem 5 RPM
+            # --- BEZPIECZNIK CZASOWY ---
             if index < len(detected_articles) - 1:
-                print("    [Rate Limit] Czekam 13 sekund przed kolejnym zapytaniem...", flush=True)
-                time.sleep(13)
+                print("    [Rate Limit] Czekam 20 sekund przed kolejnym zapytaniem...", flush=True)
+                time.sleep(20)  # <--- ZMIANA NA 20 SEKUND
             
         doc.close()
         return True
@@ -175,7 +184,7 @@ def analyze_and_slice(issue_id, file_path, db):
         return False
 
 def main():
-    print("Worker Szczytnik (Silnik tnący + AI Gemini 3 Flash + Rate Limiting) uruchomiony...", flush=True)
+    print("Worker Szczytnik (Silnik tnący + AI Gemini 3.5 Flash + Auto-Retry + 20s Sleep) uruchomiony...", flush=True)
     while True:
         db = SessionLocal()
         try:
