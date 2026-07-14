@@ -2,19 +2,19 @@
 <html lang="pl">
 <head>
     <meta charset="UTF-8">
-    <title>Szczytnik</title>
+    <title>Szczytnik - Panel Główny</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f4; color: #333; }
         .container { max-width: 1000px; background: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin: 0 auto; }
         h1 { color: #0056b3; margin-top: 0; }
         .status { padding: 10px; background: #e2f0d9; border: 1px solid #b4c6e7; margin-bottom: 20px; border-radius: 4px; }
-        .menu-list { list-style: none; padding: 0; display: flex; gap: 15px; border-bottom: 2px solid #0056b3; padding-bottom: 15px; margin-bottom: 20px; }
+        .menu-list { list-style: none; padding: 0; display: flex; gap: 15px; border-bottom: 2px solid #0056b3; padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap; }
         .menu-list li { margin: 0; }
         .menu-list li a { text-decoration: none; color: #0056b3; font-weight: bold; padding: 8px 12px; background: #e6f0fa; border-radius: 4px; transition: background 0.2s; display: inline-block; }
         .menu-list li a:hover { background: #d0e2f5; }
         .menu-list li a.active { background: #0056b3; color: white; }
         
-        /* Stylistyka tabeli */
+        /* Stylistyka tabeli bazy danych */
         .db-table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-radius: 4px; overflow: hidden; }
         .db-table th, .db-table td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
         .db-table th { background-color: #0056b3; color: white; font-weight: bold; }
@@ -33,6 +33,7 @@
 
 <div class="container">
     <h1>System Szczytnik</h1>
+    
     <div class="status">
         <strong>Status połączenia z API:</strong> 
         <?php
@@ -42,16 +43,17 @@
                 $data = json_decode($response, true);
                 echo "Połączono! Odpowiedź API: " . htmlspecialchars($data['message']);
             } else {
-                echo "<span style='color:red;'>Brak połączenia z API backendu.</span>";
+                echo "<span style='color:red;'>Brak połączenia z API backendu (port 8000).</span>";
             }
         ?>
     </div>
 
     <h3>Panel główny</h3>
     <?php
-        // Pobieramy aktualną akcję z adresu URL, domyślnie pusta (ekran powitalny)
+        // Pobieramy aktualną akcję z adresu URL (np. ?action=db_view), domyślnie pusta
         $action = isset($_GET['action']) ? $_GET['action'] : '';
     ?>
+    
     <ul class="menu-list">
         <li><a href="?action=catalog" class="<?php echo $action === 'catalog' ? 'active' : ''; ?>">Przeglądaj katalog artykułów</a></li>
         <li><a href="?action=search" class="<?php echo $action === 'search' ? 'active' : ''; ?>">Wyszukiwarka AI</a></li>
@@ -64,6 +66,7 @@
         <p style="color: #666; font-style: italic;">Prezentacja pierwszych 3 pociętych artykułów z każdego wgranego numeru czasopisma:</p>
 
         <?php
+            // Odpytujemy nasz nowy endpoint w FastAPI
             $db_api_url = 'http://backend:8000/api/debug/database-view';
             $db_response = @file_get_contents($db_api_url);
 
@@ -73,17 +76,17 @@
                 if (isset($articles['error'])) {
                     echo "<div class='error-msg'><strong>Błąd backendu:</strong> " . htmlspecialchars($articles['error']) . "</div>";
                 } elseif (empty($articles)) {
-                    echo "<div class='info-msg'>Baza danych jest obecnie pusta. Przejdź do backendu lub załaduj pliki, aby wygenerować artykuły!</div>";
+                    echo "<div class='info-msg'>Baza danych jest obecnie pusta. Wgraj czasopismo i poczekaj, aż Worker je przetworzy!</div>";
                 } else {
                     echo '<table class="db-table">';
                     echo '<thead>';
                     echo '<tr>';
                     echo '<th style="width: 15%;">Czasopismo</th>';
-                    echo '<th style="width: 25%;">Tytuł artykułu</th>';
+                    echo '<th style="width: 23%;">Tytuł artykułu</th>';
                     echo '<th style="width: 15%;">Autor</th>';
                     echo '<th style="width: 7%; text-align: center;">Strona</th>';
                     echo '<th style="width: 18%;">Słowa kluczowe</th>';
-                    echo '<th style="width: 20%;">Streszczenie</th>';
+                    echo '<th style="width: 22%;">Streszczenie</th>';
                     echo '</tr>';
                     echo '</thead>';
                     echo '<tbody>';
@@ -98,7 +101,7 @@
                         echo '<td style="color: #4a5568;">' . htmlspecialchars($art['author']) . '</td>';
                         echo '<td style="text-align: center; font-weight: bold; color: #2b6cb0;">' . htmlspecialchars($art['start_page']) . '</td>';
                         
-                        // Słowa kluczowe jako ładne odznaki (badges)
+                        // Słowa kluczowe w formie odznak (badges)
                         echo '<td>';
                         if (!empty($art['keywords'])) {
                             $keywords_array = explode(',', $art['keywords']);
@@ -110,6 +113,7 @@
                         }
                         echo '</td>';
                         
+                        // Streszczenie z zachowaniem podziału na linie
                         echo '<td class="abstract-text">' . nl2br(htmlspecialchars($art['abstract'])) . '</td>';
                         echo '</tr>';
                     }
@@ -118,7 +122,7 @@
                     echo '</table>';
                 }
             } else {
-                echo "<div class='error-msg'><strong>Błąd połączenia:</strong> Nie udało się skomunikować z API backendu pod adresem: <code>$db_api_url</code>.<br>Upewnij się, że FastAPI działa, a endpoint <code>/api/debug/database-view</code> został dodany w kodzie Pythona.</div>";
+                echo "<div class='error-msg'><strong>Błąd połączenia:</strong> Nie udało się skomunikować z API backendu pod adresem: <code>$db_api_url</code>.<br>Upewnij się, że zrestartowałeś kontener backendu (<code>podman restart szczytnik_backend</code>).</div>";
             }
         ?>
         <a href="index.php" class="back-link">← Powrót do strony głównej</a>
