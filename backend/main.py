@@ -5,7 +5,10 @@ import models
 from database import engine, SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
 
-# Dodanie middleware do obsługi CORS
+# 1. NAJPIERW tworzymy instancję aplikacji
+app = FastAPI(title="Szczytnik API")
+
+# 2. DOPIERO TERAZ dodajemy middleware do istniejącego obiektu 'app'
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Dla celów testowych - w produkcji należy określić konkretne źródła
@@ -16,8 +19,6 @@ app.add_middleware(
 
 # Automatyczne tworzenie tabel przy starcie (jeśli jeszcze nie istnieją)
 models.Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="Szczytnik API")
 
 # Służy do bezpiecznego otwierania i zamykania sesji bazy danych przy każdym zapytaniu
 def get_db():
@@ -82,20 +83,20 @@ def create_issue(issue_data: IssueCreate, db: Session = Depends(get_db)):
         }
     }
 
-# Edpoint debug do wyświetlania zawartości bazy
+# Endpoint debug do wyświetlania zawartości bazy
 @app.get("/api/debug/database-view")
 def get_database_debug_view(db: Session = Depends(get_db)):
     try:
-        # 1. Pobieramy wszystkie numery czasopism (issues)
-        issues = db.query(Issue).all()
+        # 1. Pobieramy wszystkie numery czasopism (issues) - POPRAWIONO na models.Issue
+        issues = db.query(models.Issue).all()
         result = []
         
         for issue in issues:
-            # 2. Dla każdego numeru pobieramy pierwsze 3 artykuły posortowane wg strony startowej
+            # 2. Dla każdego numeru pobieramy pierwsze 3 artykuły - POPRAWIONO na models.Article
             articles = (
-                db.query(Article)
-                .filter(Article.issue_id == issue.id)
-                .order_by(Article.start_page.asc())
+                db.query(models.Article)
+                .filter(models.Article.issue_id == issue.id)
+                .order_by(models.Article.start_page.asc())
                 .limit(3)
                 .all()
             )
@@ -114,4 +115,3 @@ def get_database_debug_view(db: Session = Depends(get_db)):
         return result
     except Exception as e:
         return {"error": f"Błąd pobierania danych: {str(e)}"}
-    
