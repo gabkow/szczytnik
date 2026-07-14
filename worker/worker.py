@@ -69,7 +69,7 @@ def extract_metadata_with_ai(text: str):
         
         # Używamy najnowszego modelu dostępnego dla nowych kluczy API
         response = client.models.generate_content(
-            model='gemini-3-flash',  # <--- ZMIANA NA NAJNOWSZĄ GENERACJĘ
+            model='gemini-3.5-flash',  # <--- ZMIANA NA NAJNOWSZĄ GENERACJĘ
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
