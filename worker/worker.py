@@ -5,6 +5,8 @@ import json
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
+from pydantic import BaseModel, Field
+from typing import List
 from sqlalchemy import create_engine, Column, Integer, String, Enum, Text, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker
 import enum
@@ -19,6 +21,12 @@ try:
     client = genai.Client()
 except Exception as e:
     print(f"OSTRZEŻENIE: Problem z inicjalizacją klienta Gemini: {e}", flush=True)
+
+# --- SCHEMAT PYDANTIC DLA GEMINI (GWARANCJA POPRAWNEGO JSON-A) ---
+class ArticleMetadata(BaseModel):
+    author: str = Field(description="Imię i nazwisko autora. Jeśli nie występuje w tekście, wpisz 'Nieznany'")
+    abstract: str = Field(description="Krótkie streszczenie artykułu, maksymalnie 10 zdań.")
+    keywords: List[str] = Field(description="Maksymalnie 6 słów kluczowych")
 
 # --- MODELE BAZY DANYCH ---
 class JobStatus(enum.Enum):
@@ -52,16 +60,10 @@ class Article(Base):
     end_page = Column(Integer)
     file_path = Column(String(500))
 
-# --- SILNIK AI (Z MECHANIZMEM PONOWNYCH PRÓB) ---
+# --- SILNIK AI (Z PYDANTIC I AUTO-RETRY) ---
 def extract_metadata_with_ai(text: str, max_retries=2):
     prompt = f"""
-    Przeanalizuj poniższy tekst artykułu z czasopisma i zwróć metadane w formacie JSON.
-    Wymagana struktura JSON:
-    {{
-        "author": "Imię i nazwisko autora. Jeśli nie występuje w tekście, wpisz 'Nieznany'",
-        "abstract": "Krótkie streszczenie artykułu, maksymalnie 10 zdań.",
-        "keywords": ["słowo1", "słowo2", "słowo3"] (maksymalnie 6 słów kluczowych)
-    }}
+    Przeanalizuj poniższy tekst artykułu z czasopisma i wyodrębnij z niego metadane.
     
     Tekst do analizy:
     {text}
@@ -69,31 +71,47 @@ def extract_metadata_with_ai(text: str, max_retries=2):
     
     for attempt in range(max_retries + 1):
         try:
+            # Przekazujemy klasę Pydantic bezpośrednio do response_schema!
             response = client.models.generate_content(
                 model='gemini-3.5-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
+                    response_mime_type="application/json",
+                    response_schema=ArticleMetadata,
                 )
             )
             
-            result = json.loads(response.text)
+            # W nowym SDK response.parsed zwraca gotowy obiekt klasy ArticleMetadata
+            result = response.parsed
             
-            if isinstance(result.get("keywords"), list):
-                result["keywords"] = ", ".join(result["keywords"])
-                
-            return result
+            if result:
+                keywords_str = ", ".join(result.keywords) if isinstance(result.keywords, list) else str(result.keywords)
+                return {
+                    "author": result.author,
+                    "abstract": result.abstract,
+                    "keywords": keywords_str
+                }
+            else:
+                # Awaryjne parsowanie tekstu w razie braku response.parsed
+                raw_json = json.loads(response.text)
+                if isinstance(raw_json.get("keywords"), list):
+                    raw_json["keywords"] = ", ".join(raw_json["keywords"])
+                return raw_json
             
         except APIError as e:
             if e.code == 429 and attempt < max_retries:
-                print(f"    [Ostrzeżenie AI] Przekroczono chwilowy limit zapytań/tokenów (429). Odczekuję 35 sekund (Próba {attempt+1}/{max_retries})...", flush=True)
+                print(f"    [Ostrzeżenie AI] Przekroczono limit zapytań/tokenów (429). Odczekuję 35 sekund (Próba {attempt+1}/{max_retries})...", flush=True)
                 time.sleep(35)
             else:
                 print(f"Błąd API Google po {attempt} próbach: {e}", flush=True)
                 break
         except Exception as e:
-            print(f"Nieoczekiwany błąd komunikacji z AI: {e}", flush=True)
-            break
+            print(f"Nieoczekiwany błąd komunikacji z AI lub parsowania: {e}", flush=True)
+            if attempt < max_retries:
+                print(f"    [Ostrzeżenie AI] Próbuję ponownie za 10 sekund (Próba {attempt+1}/{max_retries})...", flush=True)
+                time.sleep(10)
+            else:
+                break
             
     return {"author": "Nieznany", "abstract": "Błąd wygenerowania streszczenia po kilku próbach.", "keywords": ""}
 
@@ -174,7 +192,7 @@ def analyze_and_slice(issue_id, file_path, db):
             # --- BEZPIECZNIK CZASOWY ---
             if index < len(detected_articles) - 1:
                 print("    [Rate Limit] Czekam 20 sekund przed kolejnym zapytaniem...", flush=True)
-                time.sleep(20)  # <--- ZMIANA NA 20 SEKUND
+                time.sleep(20)
             
         doc.close()
         return True
@@ -184,7 +202,7 @@ def analyze_and_slice(issue_id, file_path, db):
         return False
 
 def main():
-    print("Worker Szczytnik (Silnik tnący + AI Gemini 3.5 Flash + Auto-Retry + 20s Sleep) uruchomiony...", flush=True)
+    print("Worker Szczytnik (Silnik tnący + AI Gemini 3.5 Flash + Pydantic Schema + Auto-Retry + 20s Sleep) uruchomiony...", flush=True)
     while True:
         db = SessionLocal()
         try:
