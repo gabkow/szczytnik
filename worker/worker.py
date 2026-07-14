@@ -70,7 +70,7 @@ def extract_metadata_with_ai(text: str):
         
         # W nowym SDK parametry wysyłamy przez obiekt konfiguracyjny
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
