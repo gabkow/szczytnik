@@ -2,7 +2,8 @@ import time
 import os
 import fitz  # PyMuPDF
 import json
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from sqlalchemy import create_engine, Column, Integer, String, Enum, Text, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker
 import enum
@@ -13,11 +14,11 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    print("OSTRZEŻENIE: Brak klucza GEMINI_API_KEY w zmiennych środowiskowych!", flush=True)
+# Nowy SDK automatycznie pobiera GEMINI_API_KEY ze zmiennych środowiskowych!
+try:
+    client = genai.Client()
+except Exception as e:
+    print(f"OSTRZEŻENIE: Problem z inicjalizacją klienta Gemini: {e}", flush=True)
 
 # --- MODELE BAZY DANYCH ---
 class JobStatus(enum.Enum):
@@ -54,14 +55,9 @@ class Article(Base):
 # --- SILNIK AI ---
 def extract_metadata_with_ai(text: str):
     try:
-        # Usuwamy stąd generation_config, zostaje samo czyste wywołanie modelu
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
         prompt = f"""
-        Przeanalizuj poniższy tekst artykułu z czasopisma i zwróć metadane OBLIGATORYJNIE w formacie JSON.
-        Twoja odpowiedź musi zawierać WYŁĄCZNIE czysty kod JSON, bez żadnych dodatkowych wstępów, komentarzy czy znaczników markdown (nie używaj ```json ... ```).
-        
-        Wymagana struktura obiektu JSON:
+        Przeanalizuj poniższy tekst artykułu z czasopisma i zwróć metadane w formacie JSON.
+        Wymagana struktura JSON:
         {{
             "author": "Imię i nazwisko autora. Jeśli nie występuje w tekście, wpisz 'Nieznany'",
             "abstract": "Krótkie streszczenie artykułu, maksymalnie 10 zdań.",
@@ -71,27 +67,24 @@ def extract_metadata_with_ai(text: str):
         Tekst do analizy:
         {text}
         """
-        response = model.generate_content(prompt)
         
-        # Oczyszczamy odpowiedź na wypadek, gdyby model mimo wszystko dodał bloki kodu markdown
-        response_text = response.text.strip()
-        if response_text.startswith("```"):
-            # Jeśli model dodał ```json ... ```, wycinamy to
-            lines = response_text.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].startswith("```"):
-                lines = lines[:-1]
-            response_text = "\n".join(lines).strip()
-
-        result = json.loads(response_text)
+        # W nowym SDK parametry wysyłamy przez obiekt konfiguracyjny
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        
+        result = json.loads(response.text)
         
         if isinstance(result.get("keywords"), list):
             result["keywords"] = ", ".join(result["keywords"])
             
         return result
     except Exception as e:
-        print(f"Błąd komunikacji z AI lub parsowania JSON: {e}", flush=True)
+        print(f"Błąd komunikacji z AI: {e}", flush=True)
         return {"author": "Nieznany", "abstract": "Błąd wygenerowania streszczenia.", "keywords": ""}
 
 # --- GŁÓWNY ALGORYTM ---
@@ -109,7 +102,7 @@ def analyze_and_slice(issue_id, file_path, db):
                 if "lines" in b:
                     for l in b["lines"]:
                         for s in l["spans"]:
-                            if s["size"] >= 20.0:  # Zoptymalizowany próg z poprzednich testów
+                            if s["size"] >= 20.0:  
                                 text = s["text"].strip()
                                 if len(text) > 3:
                                     page_titles.append(text)
@@ -138,7 +131,7 @@ def analyze_and_slice(issue_id, file_path, db):
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, output_filename)
             
-            # Wycinanie fizycznych stron i jednoczesne zgrywanie tekstu
+            # Wycinanie fizycznych stron
             art_doc = fitz.open()
             extracted_text = ""
             for p in range(art["start_page"] - 1, art["end_page"]):
@@ -156,7 +149,6 @@ def analyze_and_slice(issue_id, file_path, db):
             print(f"    [AI] Autor: {ai_data.get('author')}", flush=True)
             print(f"    [AI] Słowa kluczowe: {ai_data.get('keywords')}", flush=True)
             
-            # Zapis pełnych danych z AI do bazy
             new_article = Article(
                 issue_id=issue_id,
                 title=art["title"],
@@ -178,7 +170,7 @@ def analyze_and_slice(issue_id, file_path, db):
         return False
 
 def main():
-    print("Worker Szczytnik (Silnik tnący + AI Gemini) uruchomiony...", flush=True)
+    print("Worker Szczytnik (Silnik tnący + AI Gemini 1.5) uruchomiony...", flush=True)
     while True:
         db = SessionLocal()
         try:
