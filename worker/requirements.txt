@@ -1,4 +1,4 @@
 pymysql==1.1.0
 sqlalchemy==2.0.28
 pymupdf==1.23.26
-google-generativeai
+google-genai
