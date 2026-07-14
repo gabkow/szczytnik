@@ -14,7 +14,6 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Nowy SDK automatycznie pobiera GEMINI_API_KEY ze zmiennych środowiskowych!
 try:
     client = genai.Client()
 except Exception as e:
@@ -68,9 +67,9 @@ def extract_metadata_with_ai(text: str):
         {text}
         """
         
-        # W nowym SDK parametry wysyłamy przez obiekt konfiguracyjny
+        # Używamy najnowszego modelu dostępnego dla nowych kluczy API
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3-flash',  # <--- ZMIANA NA NAJNOWSZĄ GENERACJĘ
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -124,7 +123,7 @@ def analyze_and_slice(issue_id, file_path, db):
         
         print(f"\nRozpoczynam cięcie i analizę AI dla {len(detected_articles)} artykułów...", flush=True)
         
-        for art in detected_articles:
+        for index, art in enumerate(detected_articles):
             clean_title = "".join([c for c in art["title"] if c.isalnum() or c in (" ", "_", "-")]).strip()[:50]
             output_filename = f"issue_{issue_id}_page_{art['start_page']}_{clean_title.replace(' ', '_')}.pdf"
             output_dir = "/app/shared_data/articles"
@@ -141,7 +140,7 @@ def analyze_and_slice(issue_id, file_path, db):
             art_doc.save(output_path)
             art_doc.close()
             
-            print(f" -> Pocięto: {art['title']}. Zapytanie do Gemini API...", flush=True)
+            print(f" -> [{index+1}/{len(detected_articles)}] Pocięto: {art['title']}. Zapytanie do Gemini API...", flush=True)
             
             # Wysłanie tekstu do AI
             ai_data = extract_metadata_with_ai(extracted_text)
@@ -160,8 +159,14 @@ def analyze_and_slice(issue_id, file_path, db):
                 file_path=output_path
             )
             db.add(new_article)
+            db.commit() # Zapisujemy artykuł od razu, by nie czekać na całą serię!
             
-        db.commit()
+            # --- BEZPIECZNIK CZASOWY (RATE LIMITING) ---
+            # Jeśli to nie jest ostatni artykuł na liście, czekamy 13 sekund w obronie przed limitem 5 RPM
+            if index < len(detected_articles) - 1:
+                print("    [Rate Limit] Czekam 13 sekund przed kolejnym zapytaniem...", flush=True)
+                time.sleep(13)
+            
         doc.close()
         return True
         
@@ -170,7 +175,7 @@ def analyze_and_slice(issue_id, file_path, db):
         return False
 
 def main():
-    print("Worker Szczytnik (Silnik tnący + AI Gemini 1.5) uruchomiony...", flush=True)
+    print("Worker Szczytnik (Silnik tnący + AI Gemini 3 Flash + Rate Limiting) uruchomiony...", flush=True)
     while True:
         db = SessionLocal()
         try:
