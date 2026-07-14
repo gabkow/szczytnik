@@ -11,11 +11,11 @@ from sqlalchemy import create_engine, Column, Integer, String, Enum, Text, Forei
 from sqlalchemy.orm import declarative_base, sessionmaker
 import enum
 
-# --- SEKCJA KONFIGURACYJNA (IDEALNA DO TESTÓW) ---
+# --- SEKCJA KONFIGURACYJNA ---
 DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://szczytnik_user:user_secure_password@db/szczytnik_db")
 GEMINI_MODEL = "gemini-3.1-flash-lite"   # Szybszy i tańszy model Lite
-SLEEP_INTERVAL = 7                       # Odstęp między zapytaniami w sekundach (bezpieczny dla 15 RPM)
-MAX_ARTICLES_TO_PROCESS = 3              # 0 = procesuj wszystkie, >0 = limit do celów testowych
+SLEEP_INTERVAL = 7                       # Bezpieczny odstęp dla 15 RPM
+MAX_ARTICLES_TO_PROCESS = 3              # 0 = wszystkie, >0 = limit testowy
 
 # --- INICJALIZACJA POŁĄCZEŃ ---
 engine = create_engine(DATABASE_URL)
@@ -27,7 +27,7 @@ try:
 except Exception as e:
     print(f"OSTRZEŻENIE: Problem z inicjalizacją klienta Gemini: {e}", flush=True)
 
-# --- SCHEMAT PYDANTIC DLA GEMINI (GWARANCJA POPRAWNEGO JSON-A) ---
+# --- SCHEMAT PYDANTIC DLA GEMINI ---
 class ArticleMetadata(BaseModel):
     author: str = Field(description="Imię i nazwisko autora. Jeśli nie występuje w tekście, wpisz 'Nieznany'")
     abstract: str = Field(description="Krótkie streszczenie artykułu, maksymalnie 10 zdań.")
@@ -65,7 +65,7 @@ class Article(Base):
     end_page = Column(Integer)
     file_path = Column(String(500))
 
-# --- SILNIK AI (Z PYDANTIC I AUTO-RETRY) ---
+# --- SILNIK AI ---
 def extract_metadata_with_ai(text: str, max_retries=2):
     prompt = f"""
     Przeanalizuj poniższy tekst artykułu z czasopisma i wyodrębnij z niego metadane.
@@ -123,7 +123,6 @@ def analyze_and_slice(issue_id, file_path, db):
         doc = fitz.open(file_path)
         detected_articles = []
         
-        # Wykrywanie tytułów (próg wielkości czcionki >= 20)
         for page_num in range(doc.page_count):
             page = doc.load_page(page_num)
             blocks = page.get_text("dict")["blocks"]
@@ -147,17 +146,16 @@ def analyze_and_slice(issue_id, file_path, db):
             print("Nie wykryto artykułów przy użyciu obecnej heurystyki.", flush=True)
             return False
 
-        # Ustalanie stron końcowych
         for i in range(len(detected_articles)):
             if i < len(detected_articles) - 1:
                 detected_articles[i]["end_page"] = detected_articles[i+1]["start_page"] - 1
             else:
                 detected_articles[i]["end_page"] = doc.page_count
         
-        # --- BLOKADA TESTOWA ---
+        # Ograniczenie testowe
         total_detected = len(detected_articles)
         if MAX_ARTICLES_TO_PROCESS > 0:
-            print(f"    [TEST MODE] Wykryto {total_detected} artykułów, ale ograniczono proces do pierwszych {MAX_ARTICLES_TO_PROCESS}.", flush=True)
+            print(f"    [TEST MODE] Wykryto {total_detected} artykułów, ograniczono do {MAX_ARTICLES_TO_PROCESS}.", flush=True)
             detected_articles = detected_articles[:MAX_ARTICLES_TO_PROCESS]
         
         print(f"\nRozpoczynam cięcie i analizę AI dla {len(detected_articles)} artykułów...", flush=True)
@@ -169,7 +167,6 @@ def analyze_and_slice(issue_id, file_path, db):
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, output_filename)
             
-            # Wycinanie fizycznych stron i pobieranie tekstu
             art_doc = fitz.open()
             extracted_text = ""
             for p in range(art["start_page"] - 1, art["end_page"]):
@@ -181,17 +178,23 @@ def analyze_and_slice(issue_id, file_path, db):
             
             print(f" -> [{index+1}/{len(detected_articles)}] Pocięto: {art['title']}. Zapytanie do Gemini API...", flush=True)
             
-            # Zapytanie do Gemini
             ai_data = extract_metadata_with_ai(extracted_text)
             
+            # --- PREZENTACJA LOGÓW (ZGODNIE Z WYMAGANIEM) ---
             print(f"    [AI] Autor: {ai_data.get('author')}", flush=True)
             print(f"    [AI] Słowa kluczowe: {ai_data.get('keywords')}", flush=True)
             
+            abstract_full = ai_data.get("abstract", "")
+            # Skracanie do max 64 znaków (jeśli dłuższe, ucinamy do 61 znaków i dodajemy "...")
+            abstract_preview = (abstract_full[:61] + "...") if len(abstract_full) > 64 else abstract_full
+            print(f"    [AI] Streszczenie: {abstract_preview}", flush=True)
+            
+            # Zapisujemy PEŁNE streszczenie do bazy danych
             new_article = Article(
                 issue_id=issue_id,
                 title=art["title"],
                 author=ai_data.get("author", "Nieznany"),
-                abstract=ai_data.get("abstract", ""),
+                abstract=abstract_full,  # <--- Tutaj leci pełny tekst
                 keywords=ai_data.get("keywords", ""),
                 start_page=art["start_page"],
                 end_page=art["end_page"],
@@ -200,9 +203,8 @@ def analyze_and_slice(issue_id, file_path, db):
             db.add(new_article)
             db.commit() 
             
-            # --- BEZPIECZNIK CZASOWY ---
             if index < len(detected_articles) - 1:
-                print(f"    [Rate Limit] Czekam {SLEEP_INTERVAL} sekund przed kolejnym zapytaniem...", flush=True)
+                print(f"    [Rate Limit] Czekam {SLEEP_INTERVAL} sekund...", flush=True)
                 time.sleep(SLEEP_INTERVAL)
             
         doc.close()
